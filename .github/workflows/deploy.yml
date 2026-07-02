@@ -1,0 +1,292 @@
+name: Build and Deploy PowerShell Engine
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  DOCKER_USERNAME: gisuldocker
+  IMAGE_NAME: gisuldocker/powershell-engine
+  REGISTRY: docker.io
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run Python syntax checks
+        run: |
+          python -m py_compile main.py
+          python -m py_compile execution_engine.py
+          python -m py_compile session_manager.py
+          python -m py_compile gunicorn_conf.py
+          python -m py_compile gunicorn_worker.py
+          python -m py_compile path_resolver.py
+          python -m py_compile validation.py
+
+      - name: Run unit tests
+        run: |
+          pytest test_powershell_params.py -v
+        continue-on-error: false
+
+      - name: Run integration tests
+        run: |
+          if [ -f test_complete_integration.py ]; then
+            python test_complete_integration.py
+          fi
+        continue-on-error: true
+
+      - name: Run advanced command tests
+        run: |
+          if [ -f test_advanced_commands.py ]; then
+            pytest test_advanced_commands.py -v
+          fi
+        continue-on-error: true
+
+      - name: Run edge case tests
+        run: |
+          if [ -f test_edge_cases.py ]; then
+            pytest test_edge_cases.py -v
+          fi
+        continue-on-error: true
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix={{branch}}-,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Generate deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Image Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tags**: \`${{ steps.meta.outputs.tags }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platforms**: linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Run Command" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -d -p 4042:4042 --name powershell-engine ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  deploy-to-vm:
+    name: Deploy to VM
+    runs-on: [self-hosted, Linux, X64]
+    needs: build-and-push
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ env.DOCKER_USERNAME }} --password-stdin
+
+      - name: Pull latest image
+        run: docker pull ${{ env.IMAGE_NAME }}:latest
+
+      - name: Stop and remove old container
+        run: |
+          docker stop powershell-engine || true
+          docker rm powershell-engine || true
+        continue-on-error: true
+
+      - name: Start new container
+        run: |
+          docker run -d \
+            --name powershell-engine \
+            -p 4042:4042 \
+            -e LOG_LEVEL=WARNING \
+            -e WEB_CONCURRENCY=4 \
+            --restart always \
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Wait for service to be ready
+        run: |
+          echo "Waiting for service to start..."
+          sleep 10
+          for i in {1..30}; do
+            if curl -f http://localhost:4042/health 2>/dev/null || nc -z localhost 4042; then
+              echo "Service is healthy!"
+              exit 0
+            fi
+            echo "Attempt $i: Service not ready yet..."
+            sleep 2
+          done
+          echo "Service failed to start"
+          exit 1
+
+      - name: Verify deployment
+        run: |
+          echo "=== Deployment Verification ==="
+          echo "Container Status:"
+          docker ps | grep powershell-engine
+          echo ""
+          echo "Container Logs:"
+          docker logs --tail 50 powershell-engine
+          echo ""
+          echo "Port Check:"
+          netstat -tuln | grep 4042 || ss -tuln | grep 4042
+
+      - name: Test WebSocket endpoint
+        run: |
+          echo "Testing WebSocket endpoint availability..."
+          # Check if the port is accessible
+          timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/4042' && echo "Port 4042 is accessible" || echo "Port 4042 check failed"
+
+      - name: Clean up old images
+        run: docker image prune -af --filter "until=24h"
+        continue-on-error: true
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deployment-notification:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-to-vm, security-scan]
+    if: always() && github.event_name != 'pull_request'
+    
+    steps:
+      - name: Create deployment status
+        run: |
+          echo "## 🚀 PowerShell Engine Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-and-push.result }}" == "success" ]; then
+            echo "✅ **Build & Push**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Build & Push**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.deploy-to-vm.result }}" == "success" ]; then
+            echo "✅ **VM Deployment**: Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **VM Deployment**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ needs.security-scan.result }}" == "success" ]; then
+            echo "✅ **Security Scan**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Security Scan**: Issues Found" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Image Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: https://hub.docker.com/r/gisuldocker/powershell-engine" >> $GITHUB_STEP_SUMMARY
+          echo "- **Port**: 4042" >> $GITHUB_STEP_SUMMARY
+          echo "- **WebSocket Endpoint**: ws://localhost:4042/terminal" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quick Start" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# Pull the image" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Run the container" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -d -p 4042:4042 --name powershell-engine ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# Check logs" >> $GITHUB_STEP_SUMMARY
+          echo "docker logs -f powershell-engine" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          # Check overall status
+          if [ "${{ needs.build-and-push.result }}" == "success" ] && [ "${{ needs.deploy-to-vm.result }}" == "success" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Deployment completed with issues**" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

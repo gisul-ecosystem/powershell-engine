@@ -6,11 +6,13 @@ ENV LOG_LEVEL=WARNING
 
 WORKDIR /app
 
+# Copy and install Python dependencies only
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy only backend Python files (frontend excluded via .dockerignore)
+COPY *.py .
+COPY gunicorn_conf.py gunicorn_worker.py .
 
 EXPOSE 4042
 

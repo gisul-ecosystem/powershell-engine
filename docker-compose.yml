@@ -2,11 +2,22 @@ version: "3.8"
 
 services:
   powershell-engine:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gisuldocker/powershell-engine:latest
+    container_name: powershell-engine
     ports:
       - "4042:4042"
     environment:
       LOG_LEVEL: WARNING
       GUNICORN_TIMEOUT: 3600
       GUNICORN_KEEPALIVE: 120
+      PYTHONUNBUFFERED: 1
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4042/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

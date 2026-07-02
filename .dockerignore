@@ -1,0 +1,58 @@
+# Frontend files and directories
+public/
+static/
+frontend/
+client/
+*.html
+*.css
+*.js
+*.jsx
+*.tsx
+*.vue
+*.svelte
+node_modules/
+package.json
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+webpack.config.js
+vite.config.js
+tsconfig.json
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Python cache and test files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation
+*.md
+!requirements.txt
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Test files (optional - remove if you want tests in the image)
+test_*.py
+*_test.py
