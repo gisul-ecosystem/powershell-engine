@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: gisuldocker/powershell-engine:latest
+    image: docker.io/gisuldocker/powershell-engine:latest
     container_name: powershell-engine
     ports:
       - "4042:4042"

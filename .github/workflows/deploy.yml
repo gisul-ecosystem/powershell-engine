@@ -131,17 +131,22 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "podman pull docker.io/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Run Command" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker run -d -p 4042:4042 --name powershell-engine ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "podman run -d -p 4042:4042 --name powershell-engine docker.io/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
   deploy-to-vm:
     name: Deploy to VM
     runs-on: [self-hosted, Linux, X64]
+    env:
+      # Rootful Podman on the server; the runner user talks to it through
+      # its socket (see PODMAN.md). DOCKER_HOST is for the compose provider.
+      CONTAINER_HOST: unix:///run/podman/podman.sock
+      DOCKER_HOST: unix:///run/podman/podman.sock
     needs: build-and-push
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     
@@ -150,26 +155,26 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
-        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u ${{ env.DOCKER_USERNAME }} --password-stdin
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | podman login docker.io -u ${{ env.DOCKER_USERNAME }} --password-stdin
 
       - name: Pull latest image
-        run: docker pull ${{ env.IMAGE_NAME }}:latest
+        run: podman pull docker.io/${{ env.IMAGE_NAME }}:latest
 
       - name: Stop and remove old container
         run: |
-          docker stop powershell-engine || true
-          docker rm powershell-engine || true
+          podman stop powershell-engine || true
+          podman rm powershell-engine || true
         continue-on-error: true
 
       - name: Start new container
         run: |
-          docker run -d \
+          podman run -d \
             --name powershell-engine \
             -p 4042:4042 \
             -e LOG_LEVEL=WARNING \
             -e WEB_CONCURRENCY=4 \
             --restart always \
-            ${{ env.IMAGE_NAME }}:latest
+            docker.io/${{ env.IMAGE_NAME }}:latest
 
       - name: Wait for service to be ready
         run: |
@@ -190,10 +195,10 @@ jobs:
         run: |
           echo "=== Deployment Verification ==="
           echo "Container Status:"
-          docker ps | grep powershell-engine
+          podman ps | grep powershell-engine
           echo ""
           echo "Container Logs:"
-          docker logs --tail 50 powershell-engine
+          podman logs --tail 50 powershell-engine
           echo ""
           echo "Port Check:"
           netstat -tuln | grep 4042 || ss -tuln | grep 4042
@@ -205,7 +210,7 @@ jobs:
           timeout 5 bash -c 'cat < /dev/null > /dev/tcp/localhost/4042' && echo "Port 4042 is accessible" || echo "Port 4042 check failed"
 
       - name: Clean up old images
-        run: docker image prune -af --filter "until=24h"
+        run: podman image prune -af --filter "until=24h"
         continue-on-error: true
 
   security-scan:
@@ -271,13 +276,13 @@ jobs:
           echo "### Quick Start" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "# Pull the image" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "podman pull docker.io/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "# Run the container" >> $GITHUB_STEP_SUMMARY
-          echo "docker run -d -p 4042:4042 --name powershell-engine ${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "podman run -d -p 4042:4042 --name powershell-engine docker.io/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "# Check logs" >> $GITHUB_STEP_SUMMARY
-          echo "docker logs -f powershell-engine" >> $GITHUB_STEP_SUMMARY
+          echo "podman logs -f powershell-engine" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           
           # Check overall status

@@ -1,5 +1,7 @@
 # PowerShell Engine - Long Session Upgrade Summary
 
+> **Servers now run rootful Podman, not Docker.** Setup, the switch-over and checks are in [PODMAN.md](PODMAN.md). Docker commands below map one-to-one to `podman` (`docker compose` is `podman compose`); image builds on GitHub's runners still use Docker.
+
 ## 🎯 Objective Achieved
 
 The PowerShell WebSocket terminal engine has been successfully upgraded to support **long-running sessions up to 120 minutes (7200 seconds)**, preventing WebSocket disconnections during extended user tests.
